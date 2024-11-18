@@ -3,6 +3,7 @@ import pickle
 import time
 from copy import deepcopy
 from typing import List, Optional, Tuple
+import tempfile
 
 import redis
 from gensim import corpora, models, similarities
@@ -31,26 +32,57 @@ class CosineSimilarity(BaseScoring):
 
         processed_key = keyword.strip().lower().split()
         key_vector = dictionary.doc2bow(processed_key)
+        
+        """
+        Pengecekan Vector Kosong:
+        - Menambahkan validasi untuk mencegah pemrosesan vector kosong
+        """
+        if not key_vector:
+            return
+        
+        # Ensure key_vector is in correct format
         key_vector_tfidf = tfidf[key_vector]
-        sims = cosine[key_vector_tfidf]
 
-        for i, sim in enumerate(sims):
-            sim = float(sim)
-            if sim >= threshold:
-                if content := self.get_scoring_content(i):
-                    content.score = sim
 
-                    if existing_content := next(
-                        (c for c in results if c.identifier == content.identifier),
-                        None,
-                    ):
-                        if content.score > existing_content.score:
-                            existing_content.score = content.score
-                            existing_content.content = content.content
-                            existing_content.section = content.section
-                            existing_content.original = content.original
-                    else:
-                        results.append(content)
+        """
+        Penambahan Pengelolaan File Temporary:
+        - Menggunakan context manager untuk mengelola direktori temporary
+        - Memastikan direktori temporary dibuat dan dihapus dengan benar setelah selesai digunakan
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            try:
+                """
+                Inisialisasi Ulang Objek Similarity:
+                - Membuat objek Similarity baru dengan direktori temporary yang baru
+                - Menggunakan dummy document sebagai inisialisasi awal
+                """
+                cosine = similarities.Similarity(
+                    temp_dir, 
+                    tfidf[[(0, 1.0)]], # Initialize with dummy document
+                    num_features=len(dictionary)
+                )
+                sims = cosine[key_vector_tfidf]
+
+                for i, sim in enumerate(sims):
+                    sim = float(sim)
+                    if sim >= threshold:
+                        if content := self.get_scoring_content(i):
+                            content.score = sim
+
+                            if existing_content := next(
+                                (c for c in results if c.identifier == content.identifier),
+                                None,
+                            ):
+                                if content.score > existing_content.score:
+                                    existing_content.score = content.score
+                                    existing_content.content = content.content
+                                    existing_content.section = content.section
+                                    existing_content.original = content.original
+                            else:
+                                results.append(content)
+            except Exception as e:
+                log.error(f"Error in similarity calculation: {str(e)}")
+                return
 
     def create_index(self, contents: List[Content], update: bool = False) -> None:
         st = time.time()
